@@ -1,9 +1,24 @@
 from flask import Flask, request, jsonify, send_from_directory
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import re
+import os
 
 app = Flask(__name__, static_folder="static")
-ytt_api = YouTubeTranscriptApi()
+
+# Configure proxy if environment variables are set (needed for cloud deployments)
+proxy_username = os.environ.get("WEBSHARE_PROXY_USERNAME")
+proxy_password = os.environ.get("WEBSHARE_PROXY_PASSWORD")
+
+if proxy_username and proxy_password:
+    ytt_api = YouTubeTranscriptApi(
+        proxy_config=WebshareProxyConfig(
+            proxy_username=proxy_username,
+            proxy_password=proxy_password,
+        )
+    )
+else:
+    ytt_api = YouTubeTranscriptApi()
 
 
 def extract_video_id(url: str) -> str | None:
