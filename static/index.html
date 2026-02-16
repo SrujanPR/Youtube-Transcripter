@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Transcript Generator</title>
+    <style>
+        /* ── Reset & Base ─────────────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0f0f0f;
+            color: #e1e1e1;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* ── Header ───────────────────────────────────────────── */
+        header {
+            width: 100%;
+            padding: 32px 24px 0;
+            text-align: center;
+        }
+        header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+        header h1 .yt-icon {
+            width: 40px; height: 28px;
+            background: #ff0000;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        header h1 .yt-icon::after {
+            content: '';
+            border-left: 12px solid #fff;
+            border-top: 7px solid transparent;
+            border-bottom: 7px solid transparent;
+            margin-left: 2px;
+        }
+        header p {
+            color: #aaa;
+            margin-top: 8px;
+            font-size: 1rem;
+        }
+
+        /* ── Main Container ───────────────────────────────────── */
+        .container {
+            width: 100%;
+            max-width: 860px;
+            padding: 32px 24px 48px;
+        }
+
+        /* ── Input Section ────────────────────────────────────── */
+        .input-section {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .input-section input {
+            flex: 1;
+            padding: 14px 18px;
+            font-size: 1rem;
+            border: 2px solid #303030;
+            border-radius: 12px;
+            background: #181818;
+            color: #fff;
+            outline: none;
+            transition: border-color .2s;
+        }
+        .input-section input::placeholder { color: #666; }
+        .input-section input:focus { border-color: #ff4444; }
+
+        .input-section button {
+            padding: 14px 28px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            background: #ff0000;
+            color: #fff;
+            cursor: pointer;
+            transition: background .2s, transform .1s;
+            white-space: nowrap;
+        }
+        .input-section button:hover { background: #cc0000; }
+        .input-section button:active { transform: scale(.97); }
+        .input-section button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        /* ── Status Messages ──────────────────────────────────── */
+        .status {
+            text-align: center;
+            padding: 16px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .status.error {
+            display: block;
+            background: #2d1515;
+            color: #ff6b6b;
+            border: 1px solid #5c2020;
+        }
+        .status.loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: #1a1a2e;
+            color: #a0a0ff;
+            border: 1px solid #2a2a4e;
+        }
+
+        /* Spinner */
+        .spinner {
+            width: 22px; height: 22px;
+            border: 3px solid #444;
+            border-top-color: #a0a0ff;
+            border-radius: 50%;
+            animation: spin .7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Transcript Meta ──────────────────────────────────── */
+        .meta-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .meta-badge {
+            padding: 5px 14px;
+            border-radius: 20px;
+            font-size: .82rem;
+            font-weight: 600;
+            background: #222;
+            border: 1px solid #333;
+        }
+        .meta-badge.lang { color: #4fc3f7; border-color: #1a3a4a; background: #0d2433; }
+        .meta-badge.type { color: #81c784; border-color: #1a3a1a; background: #0d2a0d; }
+
+        /* ── View Toggle ──────────────────────────────────────── */
+        .view-toggle {
+            display: flex;
+            gap: 0;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+            width: fit-content;
+        }
+        .view-toggle button {
+            padding: 10px 22px;
+            font-size: .88rem;
+            font-weight: 600;
+            border: none;
+            background: #1a1a1a;
+            color: #888;
+            cursor: pointer;
+            transition: all .2s;
+        }
+        .view-toggle button.active {
+            background: #ff0000;
+            color: #fff;
+        }
+        .view-toggle button:hover:not(.active) {
+            background: #252525;
+            color: #ccc;
+        }
+
+        /* ── Copy Button ──────────────────────────────────────── */
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .actions button {
+            padding: 9px 20px;
+            font-size: .85rem;
+            font-weight: 600;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1e1e1e;
+            color: #ccc;
+            cursor: pointer;
+            transition: all .2s;
+        }
+        .actions button:hover { background: #2a2a2a; color: #fff; }
+        .actions button.copied {
+            background: #0d2a0d;
+            border-color: #1a3a1a;
+            color: #81c784;
+        }
+
+        /* ── Transcript Content ───────────────────────────────── */
+        .transcript-box {
+            background: #181818;
+            border: 1px solid #282828;
+            border-radius: 14px;
+            padding: 24px;
+            max-height: 520px;
+            overflow-y: auto;
+            line-height: 1.75;
+            font-size: .95rem;
+        }
+        .transcript-box::-webkit-scrollbar { width: 8px; }
+        .transcript-box::-webkit-scrollbar-track { background: transparent; }
+        .transcript-box::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        /* Timestamped view */
+        .segment {
+            display: flex;
+            gap: 16px;
+            padding: 6px 0;
+            border-bottom: 1px solid #1f1f1f;
+        }
+        .segment:last-child { border-bottom: none; }
+        .segment .ts {
+            color: #4fc3f7;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: .85rem;
+            min-width: 52px;
+            padding-top: 2px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .segment .ts:hover { text-decoration: underline; }
+        .segment .text { color: #ddd; }
+
+        /* Plain text view */
+        .plain-text {
+            color: #ddd;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        /* ── Results wrapper (hidden by default) ──────────────── */
+        #results { display: none; }
+
+        /* ── Responsive ───────────────────────────────────────── */
+        @media (max-width: 600px) {
+            header h1 { font-size: 1.4rem; }
+            .input-section { flex-direction: column; }
+            .input-section button { width: 100%; }
+            .transcript-box { padding: 16px; max-height: 400px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><span class="yt-icon"></span> Transcript Generator</h1>
+        <p>Paste a YouTube video URL to extract its transcript instantly</p>
+    </header>
+
+    <div class="container">
+        <!-- Input -->
+        <div class="input-section">
+            <input
+                type="text"
+                id="urlInput"
+                placeholder="https://www.youtube.com/watch?v=..."
+                autocomplete="off"
+            />
+            <button id="generateBtn" onclick="generate()">Generate</button>
+        </div>
+
+        <!-- Status -->
+        <div class="status" id="status"></div>
+
+        <!-- Results -->
+        <div id="results">
+            <div class="meta-bar" id="metaBar"></div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+                <div class="view-toggle" id="viewToggle">
+                    <button class="active" onclick="setView('timestamped')">Timestamped</button>
+                    <button onclick="setView('plain')">Plain Text</button>
+                </div>
+                <div class="actions">
+                    <button id="copyBtn" onclick="copyTranscript()">📋 Copy</button>
+                    <button id="downloadBtn" onclick="downloadTranscript()">⬇ Download</button>
+                </div>
+            </div>
+
+            <div class="transcript-box" id="transcriptBox"></div>
+        </div>
+    </div>
+
+    <script>
+        let transcriptData = null;
+        let currentView = "timestamped";
+
+        const urlInput = document.getElementById("urlInput");
+        const generateBtn = document.getElementById("generateBtn");
+        const statusEl = document.getElementById("status");
+        const resultsEl = document.getElementById("results");
+        const metaBar = document.getElementById("metaBar");
+        const transcriptBox = document.getElementById("transcriptBox");
+        const copyBtn = document.getElementById("copyBtn");
+
+        // Enter key triggers generate
+        urlInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") generate();
+        });
+
+        async function generate() {
+            const url = urlInput.value.trim();
+            if (!url) {
+                showError("Please enter a YouTube video URL.");
+                return;
+            }
+
+            showLoading();
+            generateBtn.disabled = true;
+
+            try {
+                const res = await fetch("/api/transcript", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showError(data.error || "Something went wrong.");
+                    return;
+                }
+
+                transcriptData = data;
+                renderResults();
+            } catch (err) {
+                showError("Network error. Make sure the server is running.");
+            } finally {
+                generateBtn.disabled = false;
+            }
+        }
+
+        function showError(msg) {
+            statusEl.className = "status error";
+            statusEl.textContent = msg;
+            resultsEl.style.display = "none";
+        }
+
+        function showLoading() {
+            statusEl.className = "status loading";
+            statusEl.innerHTML = '<div class="spinner"></div> Fetching transcript...';
+            resultsEl.style.display = "none";
+        }
+
+        function hideStatus() {
+            statusEl.className = "status";
+            statusEl.innerHTML = "";
+        }
+
+        function renderResults() {
+            hideStatus();
+            resultsEl.style.display = "block";
+
+            // Meta badges
+            const langLabel = transcriptData.language || transcriptData.language_code;
+            const typeLabel = transcriptData.is_generated ? "Auto-generated" : "Manual";
+            metaBar.innerHTML = `
+                <span class="meta-badge lang">🌐 ${langLabel}</span>
+                <span class="meta-badge type">${transcriptData.is_generated ? "🤖" : "✍️"} ${typeLabel}</span>
+                <span class="meta-badge">${transcriptData.segments.length} segments</span>
+            `;
+
+            renderTranscript();
+        }
+
+        function renderTranscript() {
+            if (currentView === "timestamped") {
+                transcriptBox.innerHTML = transcriptData.segments
+                    .map(
+                        (s) =>
+                            `<div class="segment">
+                                <span class="ts" title="Jump to ${s.timestamp}">${s.timestamp}</span>
+                                <span class="text">${escapeHtml(s.text)}</span>
+                            </div>`
+                    )
+                    .join("");
+            } else {
+                transcriptBox.innerHTML = `<div class="plain-text">${escapeHtml(transcriptData.full_text)}</div>`;
+            }
+        }
+
+        function setView(view) {
+            currentView = view;
+            document.querySelectorAll(".view-toggle button").forEach((btn) => {
+                btn.classList.toggle("active", btn.textContent.toLowerCase().includes(view === "timestamped" ? "time" : "plain"));
+            });
+            renderTranscript();
+        }
+
+        function copyTranscript() {
+            const text =
+                currentView === "timestamped"
+                    ? transcriptData.segments.map((s) => `[${s.timestamp}] ${s.text}`).join("\n")
+                    : transcriptData.full_text;
+
+            navigator.clipboard.writeText(text).then(() => {
+                copyBtn.classList.add("copied");
+                copyBtn.textContent = "✓ Copied!";
+                setTimeout(() => {
+                    copyBtn.classList.remove("copied");
+                    copyBtn.textContent = "📋 Copy";
+                }, 2000);
+            });
+        }
+
+        function downloadTranscript() {
+            const text =
+                currentView === "timestamped"
+                    ? transcriptData.segments.map((s) => `[${s.timestamp}] ${s.text}`).join("\n")
+                    : transcriptData.full_text;
+
+            const blob = new Blob([text], { type: "text/plain" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `transcript-${transcriptData.video_id}.txt`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement("div");
+            div.textContent = str;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
