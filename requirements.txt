@@ -1,3 +1,4 @@
 flask
 youtube-transcript-api
 gunicorn
+requests
