@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
 PROXY_URL = os.environ.get("PROXY_URL")
+GAS_PROXY_URL = os.environ.get("GAS_PROXY_URL")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -435,7 +436,52 @@ def fetch_transcript(vid):
             all_errors.append(f"{label}: {e}")
             log.warning("[%s] %s error: %s", vid, label, e)
 
-    # ── Phase 2: Watch page HTML extraction ───────────────────────────
+    # ── Phase 2: Google Apps Script proxy ──────────────────────────
+    if GAS_PROXY_URL:
+        log.info("[%s] Trying: Google Apps Script proxy", vid)
+        try:
+            r = session.post(
+                GAS_PROXY_URL,
+                json={"videoId": vid},
+                timeout=30,  # GAS cold starts can be slow
+            )
+            log.info("[%s] GAS proxy: status=%d", vid, r.status_code)
+
+            if r.status_code == 200:
+                gas = r.json()
+                if "content" in gas and "track" in gas:
+                    track = gas["track"]
+                    segs = _dedup(_parse_captions(gas["content"]))
+                    if segs:
+                        lang_code = track.get("languageCode", "")
+                        is_gen = track.get("kind", "") == "asr"
+                        label = _track_label(track) or lang_code
+                        client = gas.get("client", "unknown")
+                        return {
+                            "video_id": vid,
+                            "language": label or lang_code,
+                            "language_code": lang_code,
+                            "is_generated": is_gen,
+                            "segments": segs,
+                            "full_text": " ".join(s["text"] for s in segs),
+                            "source": f"GAS-proxy ({client})",
+                        }, []
+                    else:
+                        all_errors.append("GAS proxy: 0 segments parsed")
+                elif "error" in gas:
+                    all_errors.append(f"GAS proxy: {gas['error']}")
+                else:
+                    all_errors.append("GAS proxy: unexpected response")
+            else:
+                all_errors.append(f"GAS proxy: HTTP {r.status_code}")
+
+        except Exception as e:
+            all_errors.append(f"GAS proxy: {e}")
+            log.warning("[%s] GAS proxy error: %s", vid, e)
+    else:
+        log.info("[%s] Skipping GAS proxy (GAS_PROXY_URL not set)", vid)
+
+    # ── Phase 3: Watch page HTML extraction ───────────────────────────
     log.info("[%s] Trying: Watch page HTML extraction", vid)
     try:
         r = session.get(
@@ -522,9 +568,18 @@ def get_transcript_route():
         return jsonify(result)
 
     log.error("=== Failed: video=%s, errors=%s ===", vid, errors)
+
+    hint = ""
+    if not GAS_PROXY_URL:
+        hint = (
+            " Set up the free Google Apps Script proxy for reliable access"
+            " — see google_apps_script.js in the repo for instructions."
+        )
+
     return jsonify(
         error="Could not fetch transcript. "
-              "The video may not have captions, or YouTube blocked the request.",
+              "The video may not have captions, or YouTube blocked the request."
+              + hint,
         details=errors,
     ), 500
 
@@ -533,7 +588,10 @@ def get_transcript_route():
 def health():
     return jsonify(
         status="ok",
-        strategies=[s["name"] for s in _STRATEGIES] + ["html-extraction"],
+        strategies=[s["name"] for s in _STRATEGIES]
+                   + (["GAS-proxy"] if GAS_PROXY_URL else [])
+                   + ["html-extraction"],
+        gas_proxy_configured=bool(GAS_PROXY_URL),
         proxy_configured=bool(PROXY_URL),
     )
 
