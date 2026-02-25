@@ -6,11 +6,17 @@ YouTube blocks all datacenter/cloud IPs. To make this work on Vercel:
   1. Export YouTube cookies from your browser (see README)
   2. Set YT_COOKIES environment variable in Vercel with the cookie string
 
-Strategy order:
-  1. googleapis.com + ANDROID/ANDROID_VR/IOS (with cookies if available)
-  2. Google Apps Script proxy (if GAS_PROXY_URL is set)
-  3. Watch page HTML extraction (with cookies if available)
-  4. youtube.com + WEB (last resort)
+Strategy order (when cookies available):
+  1. youtube.com WEB client + cookies  — browser-authentic request
+  2. Watch page HTML + cookies         — fallback
+  3. GAS proxy (if configured)         — external fallback
+  4. googleapis.com ANDROID (no cookies) — last resort
+
+Strategy order (without cookies):
+  1. googleapis.com + ANDROID/ANDROID_VR/IOS — try to bypass
+  2. GAS proxy (if configured)
+  3. Watch page HTML extraction
+  4. youtube.com + WEB
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -305,17 +311,15 @@ def _create_session():
         "Accept-Language": "en-US,en;q=0.9",
         **_CLIENT_HINTS,
     })
-    s.cookies.update({"SOCS": _SOCS, "CONSENT": "PENDING+987"})
 
-    # Add user's YouTube cookies if provided — this bypasses bot detection
-    # from cloud/datacenter IPs by authenticating as a real user session
+    # Build a raw cookie header string — this gets sent to ALL domains
+    # (unlike domain-scoped cookie jars which only send to .youtube.com)
+    cookie_parts = [f"SOCS={_SOCS}", "CONSENT=PENDING+987"]
     if YT_COOKIES:
-        for pair in YT_COOKIES.split(";"):
-            pair = pair.strip()
-            if "=" in pair:
-                name, value = pair.split("=", 1)
-                s.cookies.set(name.strip(), value.strip(), domain=".youtube.com")
-        log.info("Using %d user cookies for YouTube auth", len(s.cookies))
+        cookie_parts.insert(0, YT_COOKIES)
+    s.headers["Cookie"] = "; ".join(cookie_parts)
+
+    log.info("Session cookies configured (YT_COOKIES=%s)", "YES" if YT_COOKIES else "NO")
 
     if PROXY_URL:
         s.proxies = {"http": PROXY_URL, "https": PROXY_URL}
@@ -400,28 +404,54 @@ def _fetch_timedtext(session, vid, tracks, source):
 def fetch_transcript(vid):
     """
     Fetch transcript using multiple strategies.
+    When YT_COOKIES is set, prioritize WEB client (matches browser session).
+    Without cookies, try googleapis.com ANDROID clients first.
     Returns (result_dict | None, errors_list).
     """
     session = _create_session()
     all_errors = []
+    has_cookies = bool(YT_COOKIES)
 
-    # ── Phase 1: Innertube player API (googleapis.com first) ──────────
-    for strat in _STRATEGIES:
+    # ── Build strategy order based on cookies ─────────────────────────
+    if has_cookies:
+        # With cookies: WEB client first (browser cookies + browser UA = authentic)
+        strategies = [
+            s for s in _STRATEGIES if s["name"] == "WEB"
+        ] + [
+            s for s in _STRATEGIES if s["name"] != "WEB"
+        ]
+    else:
+        # Without cookies: googleapis.com ANDROID clients first
+        strategies = list(_STRATEGIES)
+
+    # ── Phase 1: Innertube player API ─────────────────────────────────
+    for strat in strategies:
         name = strat["name"]
         endpoint = strat["endpoint"]
         domain = endpoint.split("/")[2]
         label = f"{name} ({domain})"
 
-        log.info("[%s] Trying: %s", vid, label)
+        log.info("[%s] Trying: %s (cookies=%s)", vid, label, has_cookies)
 
         try:
+            # When using WEB client with cookies, keep the browser UA
+            # When using ANDROID/IOS without cookies, use their native UA
+            req_headers = {"Content-Type": "application/json"}
+
+            if name == "WEB":
+                # Browser-authentic: use Chrome UA + client hints (already in session)
+                pass
+            else:
+                # Mobile client: override UA to match the client
+                req_headers["User-Agent"] = strat["ua"]
+                # Don't send browser cookies with mobile clients — it's suspicious
+                if has_cookies:
+                    req_headers["Cookie"] = f"SOCS={_SOCS}; CONSENT=PENDING+987"
+
             r = session.post(
                 f"{endpoint}?key={_API_KEY}",
                 json={"context": strat["context"], "videoId": vid},
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": strat["ua"],
-                },
+                headers=req_headers,
                 timeout=15,
             )
 
