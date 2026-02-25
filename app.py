@@ -1,22 +1,17 @@
 """
-YouTube Transcript Fetcher — Cloud-Compatible
+YouTube Transcript Fetcher — Residential Proxy Edition
 
-YouTube blocks all datacenter/cloud IPs. To make this work on Vercel:
+Routes all YouTube requests through a residential proxy so YouTube
+sees a normal home IP instead of a datacenter/cloud IP.
 
-  1. Export YouTube cookies from your browser (see README)
-  2. Set YT_COOKIES environment variable in Vercel with the cookie string
+Setup:
+  1. Buy a residential proxy (recommended: IPRoyal, Webshare, or Smartproxy)
+  2. Set PROXY_URL env var in Vercel:
+       http://username:password@proxy-host:port
+  3. Deploy and done!
 
-Strategy order (when cookies available):
-  1. youtube.com WEB client + cookies  — browser-authentic request
-  2. Watch page HTML + cookies         — fallback
-  3. GAS proxy (if configured)         — external fallback
-  4. googleapis.com ANDROID (no cookies) — last resort
-
-Strategy order (without cookies):
-  1. googleapis.com + ANDROID/ANDROID_VR/IOS — try to bypass
-  2. GAS proxy (if configured)
-  3. Watch page HTML extraction
-  4. youtube.com + WEB
+The proxy only costs ~$1.75/GB (IPRoyal) and transcript text is tiny
+(5-50KB per request), so $5 lasts thousands of requests.
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -34,47 +29,57 @@ app = Flask(__name__, static_folder="static")
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
-PROXY_URL = os.environ.get("PROXY_URL")
-GAS_PROXY_URL = os.environ.get("GAS_PROXY_URL")
-YT_COOKIES = os.environ.get("YT_COOKIES", "")
+PROXY_URL = os.environ.get("PROXY_URL", "")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_CHROME_UA = (
+_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/145.0.0.0 Safari/537.36"
 )
+
 _CLIENT_HINTS = {
     "Sec-Ch-Ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
     "Sec-Ch-Ua-Arch": '"x86"',
     "Sec-Ch-Ua-Bitness": '"64"',
-    "Sec-Ch-Ua-Full-Version-List": '"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="145.0.7632.110", "Chromium";v="145.0.7632.110"',
+    "Sec-Ch-Ua-Full-Version-List": (
+        '"Not:A-Brand";v="99.0.0.0", '
+        '"Google Chrome";v="145.0.7632.110", '
+        '"Chromium";v="145.0.7632.110"'
+    ),
     "Sec-Ch-Ua-Platform-Version": '"19.0.0"',
     "Sec-Ch-Ua-Wow64": "?0",
 }
-_ANDROID_UA = "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
-_IOS_UA = (
-    "com.google.ios.youtube/19.45.4 "
-    "(iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)"
-)
 
 _API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-_SOCS = (
-    "CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1"
-    "LjA3X3AxGgJlbiACGgYIgJnOlwY"
+
+# Consent cookies to skip the EU consent wall
+_CONSENT_COOKIES = (
+    "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1"
+    "LjA3X3AxGgJlbiACGgYIgJnOlwY; CONSENT=PENDING+987"
 )
 
-# Client configs — ordered by reliability on cloud IPs
-# The googleapis.com domain bypasses YouTube's bot detection for datacenter IPs
-_STRATEGIES = [
-    # ── googleapis.com endpoints (bypass bot detection) ──
+# Innertube clients to try, in order
+_CLIENTS = [
+    {
+        "name": "WEB",
+        "endpoint": "https://www.youtube.com/youtubei/v1/player",
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20260222.03.00",
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+    },
     {
         "name": "ANDROID",
         "endpoint": "https://www.googleapis.com/youtubei/v1/player",
-        "ua": _ANDROID_UA,
+        "ua": "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip",
         "context": {
             "client": {
                 "clientName": "ANDROID",
@@ -83,49 +88,6 @@ _STRATEGIES = [
                 "hl": "en",
                 "gl": "US",
             }
-        },
-    },
-    {
-        "name": "ANDROID_VR",
-        "endpoint": "https://www.googleapis.com/youtubei/v1/player",
-        "ua": _ANDROID_UA,
-        "context": {
-            "client": {
-                "clientName": "ANDROID_VR",
-                "clientVersion": "1.57.29",
-                "androidSdkVersion": 30,
-                "hl": "en",
-                "gl": "US",
-            }
-        },
-    },
-    {
-        "name": "IOS",
-        "endpoint": "https://www.googleapis.com/youtubei/v1/player",
-        "ua": _IOS_UA,
-        "context": {
-            "client": {
-                "clientName": "IOS",
-                "clientVersion": "19.45.4",
-                "deviceModel": "iPhone16,2",
-                "hl": "en",
-                "gl": "US",
-            }
-        },
-    },
-    # ── youtube.com endpoints (fallback, may be blocked on cloud) ──
-    {
-        "name": "WEB",
-        "endpoint": "https://www.youtube.com/youtubei/v1/player",
-        "ua": _CHROME_UA,
-        "context": {
-            "client": {
-                "clientName": "WEB",
-                "clientVersion": "2.20260222.03.00",
-                "hl": "en",
-                "gl": "US",
-            },
-            "thirdParty": {"embedUrl": "https://www.google.com/"},
         },
     },
 ]
@@ -304,25 +266,22 @@ def _strip_exp(url):
 
 # ── Session factory ──────────────────────────────────────────────────────────
 
-def _create_session():
+def _create_session(ua=None):
     s = requests.Session()
     s.headers.update({
-        "User-Agent": _CHROME_UA,
+        "User-Agent": ua or _UA,
         "Accept-Language": "en-US,en;q=0.9",
-        **_CLIENT_HINTS,
+        "Cookie": _CONSENT_COOKIES,
     })
-
-    # Build a raw cookie header string — this gets sent to ALL domains
-    # (unlike domain-scoped cookie jars which only send to .youtube.com)
-    cookie_parts = [f"SOCS={_SOCS}", "CONSENT=PENDING+987"]
-    if YT_COOKIES:
-        cookie_parts.insert(0, YT_COOKIES)
-    s.headers["Cookie"] = "; ".join(cookie_parts)
-
-    log.info("Session cookies configured (YT_COOKIES=%s)", "YES" if YT_COOKIES else "NO")
+    if not ua or ua == _UA:
+        s.headers.update(_CLIENT_HINTS)
 
     if PROXY_URL:
         s.proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        log.info("Proxy configured: %s", PROXY_URL.split("@")[-1] if "@" in PROXY_URL else "yes")
+    else:
+        log.warning("No PROXY_URL set — requests go from Vercel's datacenter IP (may be blocked)")
+
     return s
 
 
@@ -403,55 +362,27 @@ def _fetch_timedtext(session, vid, tracks, source):
 
 def fetch_transcript(vid):
     """
-    Fetch transcript using multiple strategies.
-    When YT_COOKIES is set, prioritize WEB client (matches browser session).
-    Without cookies, try googleapis.com ANDROID clients first.
-    Returns (result_dict | None, errors_list).
+    Fetch transcript via residential proxy.
+    Strategy: Innertube WEB → Innertube ANDROID → Watch page HTML scraping.
     """
-    session = _create_session()
     all_errors = []
-    has_cookies = bool(YT_COOKIES)
-
-    # ── Build strategy order based on cookies ─────────────────────────
-    if has_cookies:
-        # With cookies: WEB client first (browser cookies + browser UA = authentic)
-        strategies = [
-            s for s in _STRATEGIES if s["name"] == "WEB"
-        ] + [
-            s for s in _STRATEGIES if s["name"] != "WEB"
-        ]
-    else:
-        # Without cookies: googleapis.com ANDROID clients first
-        strategies = list(_STRATEGIES)
 
     # ── Phase 1: Innertube player API ─────────────────────────────────
-    for strat in strategies:
-        name = strat["name"]
-        endpoint = strat["endpoint"]
-        domain = endpoint.split("/")[2]
-        label = f"{name} ({domain})"
+    for client in _CLIENTS:
+        name = client["name"]
+        endpoint = client["endpoint"]
+        ua = client.get("ua", _UA)
+        label = f"{name} ({endpoint.split('/')[2]})"
 
-        log.info("[%s] Trying: %s (cookies=%s)", vid, label, has_cookies)
+        log.info("[%s] Trying: %s", vid, label)
+
+        session = _create_session(ua=ua)
 
         try:
-            # When using WEB client with cookies, keep the browser UA
-            # When using ANDROID/IOS without cookies, use their native UA
-            req_headers = {"Content-Type": "application/json"}
-
-            if name == "WEB":
-                # Browser-authentic: use Chrome UA + client hints (already in session)
-                pass
-            else:
-                # Mobile client: override UA to match the client
-                req_headers["User-Agent"] = strat["ua"]
-                # Don't send browser cookies with mobile clients — it's suspicious
-                if has_cookies:
-                    req_headers["Cookie"] = f"SOCS={_SOCS}; CONSENT=PENDING+987"
-
             r = session.post(
-                f"{endpoint}?key={_API_KEY}",
-                json={"context": strat["context"], "videoId": vid},
-                headers=req_headers,
+                f"{endpoint}?key={_API_KEY}&prettyPrint=false",
+                json={"context": client["context"], "videoId": vid},
+                headers={"Content-Type": "application/json"},
                 timeout=15,
             )
 
@@ -478,7 +409,7 @@ def fetch_transcript(vid):
                 all_errors.append(f"{label}: no caption tracks")
                 continue
 
-            log.info("[%s] %s: %d caption tracks", vid, label, len(tracks))
+            log.info("[%s] %s: %d caption tracks found", vid, label, len(tracks))
 
             result, errs = _fetch_timedtext(session, vid, tracks, label)
             if result:
@@ -489,97 +420,51 @@ def fetch_transcript(vid):
             all_errors.append(f"{label}: {e}")
             log.warning("[%s] %s error: %s", vid, label, e)
 
-    # ── Phase 2: Google Apps Script proxy ──────────────────────────
-    if GAS_PROXY_URL:
-        log.info("[%s] Trying: Google Apps Script proxy", vid)
-        try:
-            gas_payload = {"videoId": vid}
-            # Pass cookies to GAS so it can use them too
-            if YT_COOKIES:
-                gas_payload["cookies"] = YT_COOKIES
-
-            r = session.post(
-                GAS_PROXY_URL,
-                json=gas_payload,
-                timeout=30,  # GAS cold starts can be slow
-            )
-            log.info("[%s] GAS proxy: status=%d", vid, r.status_code)
-
-            if r.status_code == 200:
-                gas = r.json()
-                if "content" in gas and "track" in gas:
-                    track = gas["track"]
-                    segs = _dedup(_parse_captions(gas["content"]))
-                    if segs:
-                        lang_code = track.get("languageCode", "")
-                        is_gen = track.get("kind", "") == "asr"
-                        label = _track_label(track) or lang_code
-                        client = gas.get("client", "unknown")
-                        return {
-                            "video_id": vid,
-                            "language": label or lang_code,
-                            "language_code": lang_code,
-                            "is_generated": is_gen,
-                            "segments": segs,
-                            "full_text": " ".join(s["text"] for s in segs),
-                            "source": f"GAS-proxy ({client})",
-                        }, []
-                    else:
-                        all_errors.append("GAS proxy: 0 segments parsed")
-                elif "error" in gas:
-                    all_errors.append(f"GAS proxy: {gas['error']}")
-                else:
-                    all_errors.append("GAS proxy: unexpected response")
-            else:
-                all_errors.append(f"GAS proxy: HTTP {r.status_code}")
-
-        except Exception as e:
-            all_errors.append(f"GAS proxy: {e}")
-            log.warning("[%s] GAS proxy error: %s", vid, e)
-    else:
-        log.info("[%s] Skipping GAS proxy (GAS_PROXY_URL not set)", vid)
-
-    # ── Phase 3: Watch page HTML extraction ───────────────────────────
+    # ── Phase 2: Watch page HTML extraction ───────────────────────────
     log.info("[%s] Trying: Watch page HTML extraction", vid)
+    session = _create_session()
+
     try:
         r = session.get(
-            f"https://www.youtube.com/watch?v={vid}",
+            f"https://www.youtube.com/watch?v={vid}&hl=en",
             timeout=15,
         )
-        log.info("[%s] Watch page: status=%d cookies=%d",
-                 vid, r.status_code, len(session.cookies))
+        log.info("[%s] Watch page: status=%d", vid, r.status_code)
 
         if r.status_code == 200:
-            m = re.search(r"ytInitialPlayerResponse\s*=\s*", r.text)
-            if m:
-                player = _extract_json_at(r.text, m.end())
-                if player:
-                    tracks = (
-                        player.get("captions", {})
-                        .get("playerCaptionsTracklistRenderer", {})
-                        .get("captionTracks", [])
-                    )
-                    if tracks:
-                        log.info("[%s] HTML: %d caption tracks", vid, len(tracks))
-                        result, errs = _fetch_timedtext(
-                            session, vid, tracks, "html-extraction"
-                        )
-                        if result:
-                            return result, []
-                        all_errors.extend(errs)
-                    else:
-                        all_errors.append("HTML: no caption tracks in player response")
-
-                    # Check overall video status
-                    ps = player.get("playabilityStatus", {})
-                    if ps.get("status") != "OK":
-                        reason = ps.get("reason", "")
-                        if reason:
-                            all_errors.append(f"Video: {reason}")
-                else:
-                    all_errors.append("HTML: could not parse ytInitialPlayerResponse")
+            # Check for bot detection
+            if "Sign in to confirm" in r.text or "confirm you're not a bot" in r.text:
+                all_errors.append("Watch page: bot detection triggered")
             else:
-                all_errors.append("HTML: ytInitialPlayerResponse not found")
+                m = re.search(r"ytInitialPlayerResponse\s*=\s*", r.text)
+                if m:
+                    player = _extract_json_at(r.text, m.end())
+                    if player:
+                        ps = player.get("playabilityStatus", {})
+                        if ps.get("status") != "OK":
+                            reason = ps.get("reason", "")
+                            if reason:
+                                all_errors.append(f"Video: {reason}")
+
+                        tracks = (
+                            player.get("captions", {})
+                            .get("playerCaptionsTracklistRenderer", {})
+                            .get("captionTracks", [])
+                        )
+                        if tracks:
+                            log.info("[%s] HTML: %d caption tracks", vid, len(tracks))
+                            result, errs = _fetch_timedtext(
+                                session, vid, tracks, "watch-page-html"
+                            )
+                            if result:
+                                return result, []
+                            all_errors.extend(errs)
+                        else:
+                            all_errors.append("Watch page: no caption tracks in player response")
+                    else:
+                        all_errors.append("Watch page: could not parse ytInitialPlayerResponse")
+                else:
+                    all_errors.append("Watch page: ytInitialPlayerResponse not found")
         else:
             all_errors.append(f"Watch page: HTTP {r.status_code}")
 
@@ -628,11 +513,11 @@ def get_transcript_route():
     log.error("=== Failed: video=%s, errors=%s ===", vid, errors)
 
     hint = ""
-    if not YT_COOKIES:
+    if not PROXY_URL:
         hint = (
-            " To fix this: export your YouTube cookies from your browser"
-            " and set YT_COOKIES in Vercel environment variables."
-            " See the project README for instructions."
+            " No residential proxy configured. Set PROXY_URL environment "
+            "variable (e.g. http://user:pass@proxy-host:port) to route "
+            "requests through a residential IP."
         )
 
     return jsonify(
@@ -647,12 +532,9 @@ def get_transcript_route():
 def health():
     return jsonify(
         status="ok",
-        strategies=[s["name"] for s in _STRATEGIES]
-                   + (["GAS-proxy"] if GAS_PROXY_URL else [])
-                   + ["html-extraction"],
-        yt_cookies_configured=bool(YT_COOKIES),
-        gas_proxy_configured=bool(GAS_PROXY_URL),
         proxy_configured=bool(PROXY_URL),
+        proxy_host=PROXY_URL.split("@")[-1] if "@" in PROXY_URL else ("yes" if PROXY_URL else "none"),
+        strategies=["WEB-innertube", "ANDROID-innertube", "watch-page-html"],
     )
 
 
