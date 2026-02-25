@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>YouTube Transcript Generator</title>
     <style>
-        /* ── Reset & Base ─────────────────────────────────────── */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
@@ -18,7 +17,6 @@
             align-items: center;
         }
 
-        /* ── Header ───────────────────────────────────────────── */
         header {
             width: 100%;
             padding: 32px 24px 0;
@@ -48,20 +46,14 @@
             border-bottom: 7px solid transparent;
             margin-left: 2px;
         }
-        header p {
-            color: #aaa;
-            margin-top: 8px;
-            font-size: 1rem;
-        }
+        header p { color: #aaa; margin-top: 8px; font-size: 1rem; }
 
-        /* ── Main Container ───────────────────────────────────── */
         .container {
             width: 100%;
             max-width: 860px;
             padding: 32px 24px 48px;
         }
 
-        /* ── Input Section ────────────────────────────────────── */
         .input-section {
             display: flex;
             gap: 12px;
@@ -95,12 +87,8 @@
         }
         .input-section button:hover { background: #cc0000; }
         .input-section button:active { transform: scale(.97); }
-        .input-section button:disabled {
-            background: #555;
-            cursor: not-allowed;
-        }
+        .input-section button:disabled { background: #555; cursor: not-allowed; }
 
-        /* ── Status Messages ──────────────────────────────────── */
         .status {
             text-align: center;
             padding: 16px;
@@ -124,7 +112,6 @@
             border: 1px solid #2a2a4e;
         }
 
-        /* Spinner */
         .spinner {
             width: 22px; height: 22px;
             border: 3px solid #444;
@@ -134,7 +121,6 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* ── Transcript Meta ──────────────────────────────────── */
         .meta-bar {
             display: flex;
             flex-wrap: wrap;
@@ -154,7 +140,6 @@
         .meta-badge.type { color: #81c784; border-color: #1a3a1a; background: #0d2a0d; }
         .meta-badge.source { color: #ffb74d; border-color: #4a3a1a; background: #2a1f0d; }
 
-        /* ── View Toggle ──────────────────────────────────────── */
         .view-toggle {
             display: flex;
             gap: 0;
@@ -174,16 +159,9 @@
             cursor: pointer;
             transition: all .2s;
         }
-        .view-toggle button.active {
-            background: #ff0000;
-            color: #fff;
-        }
-        .view-toggle button:hover:not(.active) {
-            background: #252525;
-            color: #ccc;
-        }
+        .view-toggle button.active { background: #ff0000; color: #fff; }
+        .view-toggle button:hover:not(.active) { background: #252525; color: #ccc; }
 
-        /* ── Copy Button ──────────────────────────────────────── */
         .actions {
             display: flex;
             gap: 10px;
@@ -207,7 +185,6 @@
             color: #81c784;
         }
 
-        /* ── Transcript Content ───────────────────────────────── */
         .transcript-box {
             background: #181818;
             border: 1px solid #282828;
@@ -220,12 +197,8 @@
         }
         .transcript-box::-webkit-scrollbar { width: 8px; }
         .transcript-box::-webkit-scrollbar-track { background: transparent; }
-        .transcript-box::-webkit-scrollbar-thumb {
-            background: #333;
-            border-radius: 4px;
-        }
+        .transcript-box::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
 
-        /* Timestamped view */
         .segment {
             display: flex;
             gap: 16px;
@@ -244,18 +217,10 @@
         }
         .segment .ts:hover { text-decoration: underline; }
         .segment .text { color: #ddd; }
+        .plain-text { color: #ddd; white-space: pre-wrap; word-wrap: break-word; }
 
-        /* Plain text view */
-        .plain-text {
-            color: #ddd;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-
-        /* ── Results wrapper (hidden by default) ──────────────── */
         #results { display: none; }
 
-        /* ── Responsive ───────────────────────────────────────── */
         @media (max-width: 600px) {
             header h1 { font-size: 1.4rem; }
             .input-section { flex-direction: column; }
@@ -271,187 +236,157 @@
     </header>
 
     <div class="container">
-        <!-- Input -->
         <div class="input-section">
-            <input
-                type="text"
-                id="urlInput"
-                placeholder="https://www.youtube.com/watch?v=..."
-                autocomplete="off"
-            />
+            <input type="text" id="urlInput" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" />
             <button id="generateBtn" onclick="generate()">Generate</button>
         </div>
 
-        <!-- Status -->
         <div class="status" id="status"></div>
 
-        <!-- Results -->
         <div id="results">
             <div class="meta-bar" id="metaBar"></div>
-
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
-                <div class="view-toggle" id="viewToggle">
+                <div class="view-toggle">
                     <button class="active" onclick="setView('timestamped')">Timestamped</button>
                     <button onclick="setView('plain')">Plain Text</button>
                 </div>
                 <div class="actions">
                     <button id="copyBtn" onclick="copyTranscript()">📋 Copy</button>
-                    <button id="downloadBtn" onclick="downloadTranscript()">⬇ Download</button>
+                    <button onclick="downloadTranscript()">⬇ Download</button>
                 </div>
             </div>
-
             <div class="transcript-box" id="transcriptBox"></div>
         </div>
     </div>
 
     <script>
-        let transcriptData = null;
-        let currentView = "timestamped";
+    let transcriptData = null;
+    let currentView = "timestamped";
 
-        const urlInput = document.getElementById("urlInput");
-        const generateBtn = document.getElementById("generateBtn");
-        const statusEl = document.getElementById("status");
-        const resultsEl = document.getElementById("results");
-        const metaBar = document.getElementById("metaBar");
-        const transcriptBox = document.getElementById("transcriptBox");
-        const copyBtn = document.getElementById("copyBtn");
+    const urlInput = document.getElementById("urlInput");
+    const generateBtn = document.getElementById("generateBtn");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+    const metaBar = document.getElementById("metaBar");
+    const transcriptBox = document.getElementById("transcriptBox");
+    const copyBtn = document.getElementById("copyBtn");
 
-        // Enter key triggers generate
-        urlInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") generate();
-        });
+    urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") generate(); });
 
-        async function generate() {
-            const url = urlInput.value.trim();
-            if (!url) {
-                showError("Please enter a YouTube video URL.");
+    async function generate() {
+        const url = urlInput.value.trim();
+        if (!url) { showError("Please enter a YouTube video URL."); return; }
+
+        showLoading();
+        generateBtn.disabled = true;
+
+        try {
+            const res = await fetch("/api/transcript", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url }),
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                showError(data.error || "Something went wrong.", data.details);
                 return;
             }
 
-            showLoading();
-            generateBtn.disabled = true;
-
-            try {
-                const res = await fetch("/api/transcript", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ url }),
-                });
-                const data = await res.json();
-
-                if (!res.ok) {
-                    showError(data.error || "Something went wrong.", data.details);
-                    return;
-                }
-
-                transcriptData = data;
-                renderResults();
-            } catch (err) {
-                showError("Network error. Make sure the server is running.");
-            } finally {
-                generateBtn.disabled = false;
-            }
+            transcriptData = data;
+            renderResults();
+        } catch (err) {
+            showError("Network error. Make sure the server is running.");
+        } finally {
+            generateBtn.disabled = false;
         }
+    }
 
-        function showError(msg, details) {
-            statusEl.className = "status error";
-            let h = escapeHtml(msg);
-            if (details && details.length) {
-                h += '<div style="font-size:.82rem;color:#cc8888;margin-top:8px;text-align:left">';
-                h += details.map(d => '&bull; ' + escapeHtml(d)).join('<br>');
-                h += '</div>';
-            }
-            statusEl.innerHTML = h;
-            resultsEl.style.display = "none";
+    function showError(msg, details) {
+        statusEl.className = "status error";
+        let h = escapeHtml(msg);
+        if (details && details.length) {
+            h += '<div style="font-size:.82rem;color:#cc8888;margin-top:8px;text-align:left">';
+            h += details.map(d => '&bull; ' + escapeHtml(d)).join('<br>');
+            h += '</div>';
         }
+        statusEl.innerHTML = h;
+        resultsEl.style.display = "none";
+    }
 
-        function showLoading() {
-            statusEl.className = "status loading";
-            statusEl.innerHTML = '<div class="spinner"></div> Fetching transcript...';
-            resultsEl.style.display = "none";
+    function showLoading() {
+        statusEl.className = "status loading";
+        statusEl.innerHTML = '<div class="spinner"></div> Fetching transcript...';
+        resultsEl.style.display = "none";
+    }
+
+    function hideStatus() {
+        statusEl.className = "status";
+        statusEl.innerHTML = "";
+    }
+
+    function renderResults() {
+        hideStatus();
+        resultsEl.style.display = "block";
+        const lang = transcriptData.language || transcriptData.language_code;
+        const type = transcriptData.is_generated ? "Auto-generated" : "Manual";
+        metaBar.innerHTML = `
+            <span class="meta-badge lang">🌐 ${lang}</span>
+            <span class="meta-badge type">${transcriptData.is_generated ? "🤖" : "✍️"} ${type}</span>
+            <span class="meta-badge">${transcriptData.segments.length} segments</span>
+            ${transcriptData.source ? `<span class="meta-badge source">⚡ ${transcriptData.source}</span>` : ''}
+        `;
+        renderTranscript();
+    }
+
+    function renderTranscript() {
+        if (currentView === "timestamped") {
+            transcriptBox.innerHTML = transcriptData.segments
+                .map(s => `<div class="segment">
+                    <span class="ts" title="Jump to ${s.timestamp}">${s.timestamp}</span>
+                    <span class="text">${escapeHtml(s.text)}</span>
+                </div>`).join("");
+        } else {
+            transcriptBox.innerHTML = `<div class="plain-text">${escapeHtml(transcriptData.full_text)}</div>`;
         }
+    }
 
-        function hideStatus() {
-            statusEl.className = "status";
-            statusEl.innerHTML = "";
-        }
+    function setView(view) {
+        currentView = view;
+        document.querySelectorAll(".view-toggle button").forEach(btn => {
+            btn.classList.toggle("active", btn.textContent.toLowerCase().includes(view === "timestamped" ? "time" : "plain"));
+        });
+        renderTranscript();
+    }
 
-        function renderResults() {
-            hideStatus();
-            resultsEl.style.display = "block";
+    function copyTranscript() {
+        const text = currentView === "timestamped"
+            ? transcriptData.segments.map(s => `[${s.timestamp}] ${s.text}`).join("\n")
+            : transcriptData.full_text;
+        navigator.clipboard.writeText(text).then(() => {
+            copyBtn.classList.add("copied");
+            copyBtn.textContent = "✓ Copied!";
+            setTimeout(() => { copyBtn.classList.remove("copied"); copyBtn.textContent = "📋 Copy"; }, 2000);
+        });
+    }
 
-            // Meta badges
-            const langLabel = transcriptData.language || transcriptData.language_code;
-            const typeLabel = transcriptData.is_generated ? "Auto-generated" : "Manual";
-            metaBar.innerHTML = `
-                <span class="meta-badge lang">🌐 ${langLabel}</span>
-                <span class="meta-badge type">${transcriptData.is_generated ? "🤖" : "✍️"} ${typeLabel}</span>
-                <span class="meta-badge">${transcriptData.segments.length} segments</span>
-                ${transcriptData.source ? `<span class="meta-badge source">⚡ ${transcriptData.source}</span>` : ''}
-            `;
+    function downloadTranscript() {
+        const text = currentView === "timestamped"
+            ? transcriptData.segments.map(s => `[${s.timestamp}] ${s.text}`).join("\n")
+            : transcriptData.full_text;
+        const blob = new Blob([text], { type: "text/plain" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `transcript-${transcriptData.video_id}.txt`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
 
-            renderTranscript();
-        }
-
-        function renderTranscript() {
-            if (currentView === "timestamped") {
-                transcriptBox.innerHTML = transcriptData.segments
-                    .map(
-                        (s) =>
-                            `<div class="segment">
-                                <span class="ts" title="Jump to ${s.timestamp}">${s.timestamp}</span>
-                                <span class="text">${escapeHtml(s.text)}</span>
-                            </div>`
-                    )
-                    .join("");
-            } else {
-                transcriptBox.innerHTML = `<div class="plain-text">${escapeHtml(transcriptData.full_text)}</div>`;
-            }
-        }
-
-        function setView(view) {
-            currentView = view;
-            document.querySelectorAll(".view-toggle button").forEach((btn) => {
-                btn.classList.toggle("active", btn.textContent.toLowerCase().includes(view === "timestamped" ? "time" : "plain"));
-            });
-            renderTranscript();
-        }
-
-        function copyTranscript() {
-            const text =
-                currentView === "timestamped"
-                    ? transcriptData.segments.map((s) => `[${s.timestamp}] ${s.text}`).join("\n")
-                    : transcriptData.full_text;
-
-            navigator.clipboard.writeText(text).then(() => {
-                copyBtn.classList.add("copied");
-                copyBtn.textContent = "✓ Copied!";
-                setTimeout(() => {
-                    copyBtn.classList.remove("copied");
-                    copyBtn.textContent = "📋 Copy";
-                }, 2000);
-            });
-        }
-
-        function downloadTranscript() {
-            const text =
-                currentView === "timestamped"
-                    ? transcriptData.segments.map((s) => `[${s.timestamp}] ${s.text}`).join("\n")
-                    : transcriptData.full_text;
-
-            const blob = new Blob([text], { type: "text/plain" });
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = `transcript-${transcriptData.video_id}.txt`;
-            a.click();
-            URL.revokeObjectURL(a.href);
-        }
-
-        function escapeHtml(str) {
-            const div = document.createElement("div");
-            div.textContent = str;
-            return div.innerHTML;
-        }
+    function escapeHtml(str) {
+        const d = document.createElement("div");
+        d.textContent = str;
+        return d.innerHTML;
+    }
     </script>
 </body>
 </html>
