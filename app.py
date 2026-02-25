@@ -1,20 +1,16 @@
 """
-YouTube Transcript Fetcher — Cloud-compatible Backend
+YouTube Transcript Fetcher — Cloud-Compatible
 
-Strategies (tried in order):
-  1. ANDROID_VR innertube client     — less targeted, gives clean timedtext URLs
-  2. ANDROID_UNPLUGGED (YouTube TV)  — another uncommon client
-  3. ANDROID_TESTSUITE               — test client, minimal bot detection
-  4. WEB innertube                   — standard client, embedded context
-  5. Watch page HTML extraction      — extract tracks + rewrite timedtext URLs
-  6. ANDROID / IOS (last resort)     — most likely to be blocked from cloud IPs
+Key discovery: www.googleapis.com/youtubei/v1/player with ANDROID client
+bypasses YouTube's datacenter IP blocking, while the same call to
+www.youtube.com is blocked with "Sign in to confirm you're not a bot".
 
-Key techniques:
-  - SOCS cookie bypasses EU consent wall
-  - Session cookies (YSC, VISITOR_INFO1_LIVE) from watch/embed page
-  - Client-specific User-Agent strings
-  - exp=xpe parameter stripping on HTML-extracted timedtext URLs
-  - Multiple timedtext format fallbacks (json3 → srv3 → default)
+Strategy order:
+  1. googleapis.com + ANDROID         — primary, works from cloud IPs
+  2. googleapis.com + ANDROID_VR      — fallback uncommon client
+  3. googleapis.com + IOS             — fallback
+  4. Watch page HTML extraction       — fallback with URL rewriting
+  5. youtube.com clients              — last resort (likely blocked on cloud)
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -42,71 +38,24 @@ _CHROME_UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 _ANDROID_UA = "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
-_IOS_UA = "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)"
-_TV_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+_IOS_UA = (
+    "com.google.ios.youtube/19.45.4 "
+    "(iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)"
+)
 
-_DEFAULT_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 _SOCS = (
     "CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1"
     "LjA3X3AxGgJlbiACGgYIgJnOlwY"
 )
 
-# Innertube client configurations — ordered by likelihood of working on cloud
-_CLIENTS = [
-    {
-        "name": "ANDROID_VR",
-        "ua": _ANDROID_UA,
-        "context": {
-            "client": {
-                "clientName": "ANDROID_VR",
-                "clientVersion": "1.57.29",
-                "androidSdkVersion": 30,
-                "hl": "en",
-                "gl": "US",
-            }
-        },
-    },
-    {
-        "name": "ANDROID_UNPLUGGED",
-        "ua": _ANDROID_UA,
-        "context": {
-            "client": {
-                "clientName": "ANDROID_UNPLUGGED",
-                "clientVersion": "8.33.0",
-                "androidSdkVersion": 30,
-                "hl": "en",
-                "gl": "US",
-            }
-        },
-    },
-    {
-        "name": "ANDROID_TESTSUITE",
-        "ua": _ANDROID_UA,
-        "context": {
-            "client": {
-                "clientName": "ANDROID_TESTSUITE",
-                "clientVersion": "1.9",
-                "androidSdkVersion": 30,
-                "hl": "en",
-                "gl": "US",
-            }
-        },
-    },
-    {
-        "name": "WEB_EMBEDDED",
-        "ua": _CHROME_UA,
-        "context": {
-            "client": {
-                "clientName": "WEB",
-                "clientVersion": "2.20260222.03.00",
-                "hl": "en",
-                "gl": "US",
-            },
-            "thirdParty": {"embedUrl": "https://www.google.com/"},
-        },
-    },
+# Client configs — ordered by reliability on cloud IPs
+# The googleapis.com domain bypasses YouTube's bot detection for datacenter IPs
+_STRATEGIES = [
+    # ── googleapis.com endpoints (bypass bot detection) ──
     {
         "name": "ANDROID",
+        "endpoint": "https://www.googleapis.com/youtubei/v1/player",
         "ua": _ANDROID_UA,
         "context": {
             "client": {
@@ -119,7 +68,22 @@ _CLIENTS = [
         },
     },
     {
+        "name": "ANDROID_VR",
+        "endpoint": "https://www.googleapis.com/youtubei/v1/player",
+        "ua": _ANDROID_UA,
+        "context": {
+            "client": {
+                "clientName": "ANDROID_VR",
+                "clientVersion": "1.57.29",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+    },
+    {
         "name": "IOS",
+        "endpoint": "https://www.googleapis.com/youtubei/v1/player",
         "ua": _IOS_UA,
         "context": {
             "client": {
@@ -129,6 +93,21 @@ _CLIENTS = [
                 "hl": "en",
                 "gl": "US",
             }
+        },
+    },
+    # ── youtube.com endpoints (fallback, may be blocked on cloud) ──
+    {
+        "name": "WEB",
+        "endpoint": "https://www.youtube.com/youtubei/v1/player",
+        "ua": _CHROME_UA,
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20260222.03.00",
+                "hl": "en",
+                "gl": "US",
+            },
+            "thirdParty": {"embedUrl": "https://www.google.com/"},
         },
     },
 ]
@@ -182,7 +161,6 @@ def _dedup(segs):
 
 
 def _pick_track(tracks, lang="en"):
-    # Prefer exact manual, then exact ASR, then prefix, then first
     for t in tracks:
         if t.get("languageCode") == lang and t.get("kind", "") != "asr":
             return t
@@ -237,7 +215,9 @@ def _parse_xml(raw):
     for el in root.findall(".//text"):
         text = unescape((el.text or "").strip())
         if text:
-            segs.append(_seg_sec(float(el.get("start", 0)), float(el.get("dur", 0)), text))
+            segs.append(_seg_sec(
+                float(el.get("start", 0)), float(el.get("dur", 0)), text
+            ))
     return segs
 
 
@@ -295,10 +275,10 @@ def _extract_json_at(html, idx):
     return None
 
 
-# ── URL rewriting ─────────────────────────────────────────────────────────────
+# ── URL rewriting helpers ─────────────────────────────────────────────────────
 
 def _strip_exp(url):
-    """Remove exp=xpe parameter and exp from sparams to fix empty responses."""
+    """Remove exp=xpe parameter that causes empty timedtext responses."""
     url = re.sub(r"[&?]exp=[^&]*", "", url)
     url = re.sub(r"(sparams=[^&]*)(?:,exp|exp,)", r"\1", url)
     return url
@@ -321,7 +301,7 @@ def _create_session():
 # ── Timedtext fetcher ────────────────────────────────────────────────────────
 
 def _fetch_timedtext(session, vid, tracks, source):
-    """Pick best track and download caption content."""
+    """Pick best track, fetch and parse caption content."""
     errors = []
     chosen = _pick_track(tracks)
     if not chosen:
@@ -336,23 +316,16 @@ def _fetch_timedtext(session, vid, tracks, source):
     is_generated = chosen.get("kind", "") == "asr"
     has_exp = "exp=" in cap_url
 
-    log.info("[%s] Fetching timedtext (lang=%s, source=%s, exp=%s)",
+    log.info("[%s] Fetching timedtext (lang=%s, src=%s, exp=%s)",
              vid, lang_code, source, has_exp)
 
-    # Build URL variants to try
-    urls_to_try = []
+    # Build URL list — try with exp stripped first if present
+    urls = []
+    if has_exp:
+        urls.append(("no-exp", _strip_exp(cap_url)))
+    urls.append(("original", cap_url))
 
-    # First: try the original URL (works if it doesn't have exp=xpe)
-    if not has_exp:
-        urls_to_try.append(("original", cap_url))
-    else:
-        # Try with exp stripped (may 404 but worth trying)
-        stripped = _strip_exp(cap_url)
-        urls_to_try.append(("stripped-exp", stripped))
-        # Also try original (may return empty but worth trying)
-        urls_to_try.append(("original-with-exp", cap_url))
-
-    for url_label, base_url in urls_to_try:
+    for url_tag, base_url in urls:
         for fmt in ["json3", "srv3", ""]:
             url = base_url
             if fmt:
@@ -363,22 +336,23 @@ def _fetch_timedtext(session, vid, tracks, source):
 
             try:
                 r = session.get(url, timeout=15)
-                content_len = len(r.text.strip())
-                log.info("[%s] Timedtext (%s, fmt=%s): status=%d len=%d",
-                         vid, url_label, fmt or "default", r.status_code, content_len)
+                clen = len(r.text.strip())
+                log.info("[%s] Timedtext (%s/%s): status=%d len=%d",
+                         vid, url_tag, fmt or "default", r.status_code, clen)
 
+                if r.status_code == 404:
+                    errors.append(f"Timedtext ({url_tag}/{fmt or 'default'}): 404")
+                    break  # URL variant is wrong, skip other formats
                 if r.status_code != 200:
-                    errors.append(f"Timedtext ({url_label}/{fmt or 'default'}): HTTP {r.status_code}")
-                    if r.status_code == 404:
-                        break  # No point trying other formats for this URL
+                    errors.append(f"Timedtext ({url_tag}/{fmt or 'default'}): HTTP {r.status_code}")
                     continue
-                if content_len == 0:
-                    errors.append(f"Timedtext ({url_label}/{fmt or 'default'}): empty response")
+                if clen == 0:
+                    errors.append(f"Timedtext ({url_tag}/{fmt or 'default'}): empty")
                     continue
 
                 segs = _dedup(_parse_captions(r.text))
                 if not segs:
-                    errors.append(f"Timedtext ({url_label}/{fmt or 'default'}): parsed 0 segments")
+                    errors.append(f"Timedtext ({url_tag}/{fmt or 'default'}): 0 segments")
                     continue
 
                 return {
@@ -392,7 +366,7 @@ def _fetch_timedtext(session, vid, tracks, source):
                 }, []
 
             except Exception as e:
-                errors.append(f"Timedtext ({url_label}/{fmt or 'default'}): {e}")
+                errors.append(f"Timedtext ({url_tag}/{fmt or 'default'}): {e}")
 
     return None, errors
 
@@ -401,76 +375,34 @@ def _fetch_timedtext(session, vid, tracks, source):
 
 def fetch_transcript(vid):
     """
-    Try multiple strategies to fetch the transcript.
-    Returns (result_dict, errors_list). result_dict is None on failure.
+    Fetch transcript using multiple strategies.
+    Returns (result_dict | None, errors_list).
     """
     session = _create_session()
     all_errors = []
 
-    # ── Phase 0: Establish session with YouTube ───────────────────────
-    log.info("[%s] Establishing YouTube session...", vid)
-    api_key = _DEFAULT_API_KEY
+    # ── Phase 1: Innertube player API (googleapis.com first) ──────────
+    for strat in _STRATEGIES:
+        name = strat["name"]
+        endpoint = strat["endpoint"]
+        domain = endpoint.split("/")[2]
+        label = f"{name} ({domain})"
 
-    try:
-        r = session.get(f"https://www.youtube.com/watch?v={vid}", timeout=15)
-        log.info("[%s] Watch page: status=%d cookies=%d",
-                 vid, r.status_code, len(session.cookies))
-
-        m = re.search(r'"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"', r.text)
-        if m:
-            api_key = m.group(1)
-
-        # ── Try HTML extraction first (may have exp=xpe issue) ────
-        m = re.search(r"ytInitialPlayerResponse\s*=\s*", r.text)
-        if m:
-            player_data = _extract_json_at(r.text, m.end())
-            if player_data:
-                html_tracks = (
-                    player_data.get("captions", {})
-                    .get("playerCaptionsTracklistRenderer", {})
-                    .get("captionTracks", [])
-                )
-                if html_tracks:
-                    log.info("[%s] HTML extraction: %d tracks", vid, len(html_tracks))
-                    result, errs = _fetch_timedtext(session, vid, html_tracks, "html-extraction")
-                    if result:
-                        return result, []
-                    all_errors.extend(errs)
-                else:
-                    all_errors.append("HTML extraction: no caption tracks in player response")
-
-                # Check if video has captions at all
-                ps = player_data.get("playabilityStatus", {})
-                if ps.get("status") != "OK":
-                    reason = ps.get("reason", "unknown")
-                    all_errors.append(f"Video status: {reason}")
-            else:
-                all_errors.append("HTML extraction: could not parse ytInitialPlayerResponse")
-        else:
-            all_errors.append("HTML extraction: ytInitialPlayerResponse not found")
-
-    except Exception as e:
-        all_errors.append(f"Watch page: {e}")
-        log.warning("[%s] Watch page error: %s", vid, e)
-
-    # ── Phase 1: Try innertube player clients ─────────────────────────
-    for client_cfg in _CLIENTS:
-        cname = client_cfg["name"]
-        log.info("[%s] Trying innertube client: %s", vid, cname)
+        log.info("[%s] Trying: %s", vid, label)
 
         try:
             r = session.post(
-                f"https://www.youtube.com/youtubei/v1/player?key={api_key}",
-                json={"context": client_cfg["context"], "videoId": vid},
+                f"{endpoint}?key={_API_KEY}",
+                json={"context": strat["context"], "videoId": vid},
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": client_cfg["ua"],
+                    "User-Agent": strat["ua"],
                 },
                 timeout=15,
             )
 
             if r.status_code != 200:
-                all_errors.append(f"Player ({cname}): HTTP {r.status_code}")
+                all_errors.append(f"{label}: HTTP {r.status_code}")
                 continue
 
             data = r.json()
@@ -479,7 +411,7 @@ def fetch_transcript(vid):
 
             if status != "OK":
                 reason = ps.get("reason", status or "unknown")
-                all_errors.append(f"Player ({cname}): {reason}")
+                all_errors.append(f"{label}: {reason}")
                 continue
 
             tracks = (
@@ -489,19 +421,66 @@ def fetch_transcript(vid):
             )
 
             if not tracks:
-                all_errors.append(f"Player ({cname}): no caption tracks")
+                all_errors.append(f"{label}: no caption tracks")
                 continue
 
-            log.info("[%s] Player (%s): %d caption tracks found", vid, cname, len(tracks))
+            log.info("[%s] %s: %d caption tracks", vid, label, len(tracks))
 
-            result, errs = _fetch_timedtext(session, vid, tracks, f"innertube-{cname}")
+            result, errs = _fetch_timedtext(session, vid, tracks, label)
             if result:
                 return result, []
             all_errors.extend(errs)
 
         except Exception as e:
-            all_errors.append(f"Player ({cname}): {e}")
-            log.warning("[%s] Player (%s) error: %s", vid, cname, e)
+            all_errors.append(f"{label}: {e}")
+            log.warning("[%s] %s error: %s", vid, label, e)
+
+    # ── Phase 2: Watch page HTML extraction ───────────────────────────
+    log.info("[%s] Trying: Watch page HTML extraction", vid)
+    try:
+        r = session.get(
+            f"https://www.youtube.com/watch?v={vid}",
+            timeout=15,
+        )
+        log.info("[%s] Watch page: status=%d cookies=%d",
+                 vid, r.status_code, len(session.cookies))
+
+        if r.status_code == 200:
+            m = re.search(r"ytInitialPlayerResponse\s*=\s*", r.text)
+            if m:
+                player = _extract_json_at(r.text, m.end())
+                if player:
+                    tracks = (
+                        player.get("captions", {})
+                        .get("playerCaptionsTracklistRenderer", {})
+                        .get("captionTracks", [])
+                    )
+                    if tracks:
+                        log.info("[%s] HTML: %d caption tracks", vid, len(tracks))
+                        result, errs = _fetch_timedtext(
+                            session, vid, tracks, "html-extraction"
+                        )
+                        if result:
+                            return result, []
+                        all_errors.extend(errs)
+                    else:
+                        all_errors.append("HTML: no caption tracks in player response")
+
+                    # Check overall video status
+                    ps = player.get("playabilityStatus", {})
+                    if ps.get("status") != "OK":
+                        reason = ps.get("reason", "")
+                        if reason:
+                            all_errors.append(f"Video: {reason}")
+                else:
+                    all_errors.append("HTML: could not parse ytInitialPlayerResponse")
+            else:
+                all_errors.append("HTML: ytInitialPlayerResponse not found")
+        else:
+            all_errors.append(f"Watch page: HTTP {r.status_code}")
+
+    except Exception as e:
+        all_errors.append(f"Watch page: {e}")
 
     return None, all_errors
 
@@ -521,10 +500,8 @@ def get_transcript_route():
 
     if not vid and not url:
         return jsonify(error="Please provide a YouTube video URL."), 400
-
     if not vid:
         vid = extract_video_id(url)
-
     if not vid:
         return jsonify(error="Invalid YouTube URL. Please check and try again."), 400
 
@@ -556,7 +533,7 @@ def get_transcript_route():
 def health():
     return jsonify(
         status="ok",
-        clients=[c["name"] for c in _CLIENTS],
+        strategies=[s["name"] for s in _STRATEGIES] + ["html-extraction"],
         proxy_configured=bool(PROXY_URL),
     )
 
