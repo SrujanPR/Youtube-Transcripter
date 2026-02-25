@@ -37,8 +37,18 @@ YT_COOKIES = os.environ.get("YT_COOKIES", "")
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
+    "Chrome/145.0.0.0 Safari/537.36"
 )
+_CLIENT_HINTS = {
+    "Sec-Ch-Ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Ch-Ua-Arch": '"x86"',
+    "Sec-Ch-Ua-Bitness": '"64"',
+    "Sec-Ch-Ua-Full-Version-List": '"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="145.0.7632.110", "Chromium";v="145.0.7632.110"',
+    "Sec-Ch-Ua-Platform-Version": '"19.0.0"',
+    "Sec-Ch-Ua-Wow64": "?0",
+}
 _ANDROID_UA = "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
 _IOS_UA = (
     "com.google.ios.youtube/19.45.4 "
@@ -293,6 +303,7 @@ def _create_session():
     s.headers.update({
         "User-Agent": _CHROME_UA,
         "Accept-Language": "en-US,en;q=0.9",
+        **_CLIENT_HINTS,
     })
     s.cookies.update({"SOCS": _SOCS, "CONSENT": "PENDING+987"})
 
