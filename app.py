@@ -1,16 +1,16 @@
 """
 YouTube Transcript Fetcher — Cloud-Compatible
 
-Key discovery: www.googleapis.com/youtubei/v1/player with ANDROID client
-bypasses YouTube's datacenter IP blocking, while the same call to
-www.youtube.com is blocked with "Sign in to confirm you're not a bot".
+YouTube blocks all datacenter/cloud IPs. To make this work on Vercel:
+
+  1. Export YouTube cookies from your browser (see README)
+  2. Set YT_COOKIES environment variable in Vercel with the cookie string
 
 Strategy order:
-  1. googleapis.com + ANDROID         — primary, works from cloud IPs
-  2. googleapis.com + ANDROID_VR      — fallback uncommon client
-  3. googleapis.com + IOS             — fallback
-  4. Watch page HTML extraction       — fallback with URL rewriting
-  5. youtube.com clients              — last resort (likely blocked on cloud)
+  1. googleapis.com + ANDROID/ANDROID_VR/IOS (with cookies if available)
+  2. Google Apps Script proxy (if GAS_PROXY_URL is set)
+  3. Watch page HTML extraction (with cookies if available)
+  4. youtube.com + WEB (last resort)
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 
 PROXY_URL = os.environ.get("PROXY_URL")
 GAS_PROXY_URL = os.environ.get("GAS_PROXY_URL")
+YT_COOKIES = os.environ.get("YT_COOKIES", "")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -294,6 +295,17 @@ def _create_session():
         "Accept-Language": "en-US,en;q=0.9",
     })
     s.cookies.update({"SOCS": _SOCS, "CONSENT": "PENDING+987"})
+
+    # Add user's YouTube cookies if provided — this bypasses bot detection
+    # from cloud/datacenter IPs by authenticating as a real user session
+    if YT_COOKIES:
+        for pair in YT_COOKIES.split(";"):
+            pair = pair.strip()
+            if "=" in pair:
+                name, value = pair.split("=", 1)
+                s.cookies.set(name.strip(), value.strip(), domain=".youtube.com")
+        log.info("Using %d user cookies for YouTube auth", len(s.cookies))
+
     if PROXY_URL:
         s.proxies = {"http": PROXY_URL, "https": PROXY_URL}
     return s
@@ -440,9 +452,14 @@ def fetch_transcript(vid):
     if GAS_PROXY_URL:
         log.info("[%s] Trying: Google Apps Script proxy", vid)
         try:
+            gas_payload = {"videoId": vid}
+            # Pass cookies to GAS so it can use them too
+            if YT_COOKIES:
+                gas_payload["cookies"] = YT_COOKIES
+
             r = session.post(
                 GAS_PROXY_URL,
-                json={"videoId": vid},
+                json=gas_payload,
                 timeout=30,  # GAS cold starts can be slow
             )
             log.info("[%s] GAS proxy: status=%d", vid, r.status_code)
@@ -570,10 +587,11 @@ def get_transcript_route():
     log.error("=== Failed: video=%s, errors=%s ===", vid, errors)
 
     hint = ""
-    if not GAS_PROXY_URL:
+    if not YT_COOKIES:
         hint = (
-            " Set up the free Google Apps Script proxy for reliable access"
-            " — see google_apps_script.js in the repo for instructions."
+            " To fix this: export your YouTube cookies from your browser"
+            " and set YT_COOKIES in Vercel environment variables."
+            " See the project README for instructions."
         )
 
     return jsonify(
@@ -591,6 +609,7 @@ def health():
         strategies=[s["name"] for s in _STRATEGIES]
                    + (["GAS-proxy"] if GAS_PROXY_URL else [])
                    + ["html-extraction"],
+        yt_cookies_configured=bool(YT_COOKIES),
         gas_proxy_configured=bool(GAS_PROXY_URL),
         proxy_configured=bool(PROXY_URL),
     )

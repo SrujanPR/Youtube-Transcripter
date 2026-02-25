@@ -1,9 +1,9 @@
 /**
- * YouTube Transcript Proxy — Google Apps Script (v2)
+ * YouTube Transcript Proxy — Google Apps Script (v3)
  *
- * This runs on Google's own infrastructure. It fetches the YouTube
- * watch page HTML (like a normal browser), extracts caption track
- * URLs from the embedded player response, and fetches the captions.
+ * Fetches YouTube transcripts using YOUR browser cookies to bypass
+ * bot detection. This runs on Google's infrastructure with your
+ * authenticated session, so YouTube treats it as a real user.
  *
  * ── SETUP (5 minutes) ──────────────────────────────────────────
  *
@@ -22,20 +22,37 @@
  * 10. In Vercel → your project → Settings → Environment Variables:
  *       • Name:  GAS_PROXY_URL
  *       • Value: <paste the URL from step 9>
- *     Click Save, then redeploy.
  *
- * ── UPDATE EXISTING DEPLOYMENT ─────────────────────────────────
+ * ── ADD YOUR YOUTUBE COOKIES ───────────────────────────────────
  *
- *  If you already deployed v1 and just need to update the code:
- *  1. Paste this new code over the old code
- *  2. Click  Deploy  ▸  Manage deployments
- *  3. Click the pencil ✏ icon on your existing deployment
- *  4. Under "Version", select "New version"
- *  5. Click "Deploy"
- *  (The URL stays the same — no need to update Vercel env vars)
+ * 11. Export YouTube cookies from your browser:
+ *       a. Go to youtube.com (make sure you're logged in)
+ *       b. Press F12 → Network tab → reload the page
+ *       c. Click the first "watch" or "youtube.com" request
+ *       d. Find "Cookie:" in Request Headers
+ *       e. Copy the ENTIRE cookie string
+ * 12. In the Apps Script editor:
+ *       a. Click ⚙ Project Settings (gear icon, left sidebar)
+ *       b. Scroll to "Script Properties" → Click "Add script property"
+ *       c. Property: YT_COOKIES
+ *       d. Value: paste the cookie string from step 11
+ *       e. Click Save
+ * 13. Redeploy: Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *
  * ────────────────────────────────────────────────────────────────
  */
+
+
+/* ── Get cookies from Script Properties ── */
+
+function getYTCookies() {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    return props.getProperty("YT_COOKIES") || "";
+  } catch (e) {
+    return "";
+  }
+}
 
 
 /* ── Entry point: POST {videoId: "dQw4w9WgXcQ"} ── */
@@ -44,26 +61,43 @@ function doPost(e) {
   try {
     var body = JSON.parse(e.postData.contents);
     var videoId = body.videoId;
+    // Allow passing cookies from the Vercel backend too
+    var extraCookies = body.cookies || "";
 
     if (!videoId) {
       return respond({ error: "Missing videoId" });
     }
 
-    // Strategy 1: Watch page HTML scraping (most reliable)
-    var result = tryWatchPage(videoId);
+    // Build cookie string: Script Properties + any passed from Vercel
+    var cookies = getYTCookies();
+    if (extraCookies) {
+      cookies = cookies ? (cookies + "; " + extraCookies) : extraCookies;
+    }
+
+    // Strategy 1: Watch page HTML scraping with cookies (most reliable)
+    var result = tryWatchPage(videoId, cookies);
     if (result.success) {
       return respond(result.data);
     }
 
-    // Strategy 2: Innertube API on youtube.com (WEB client)
-    var result2 = tryInnertube(videoId);
+    // Strategy 2: Innertube API with cookies
+    var result2 = tryInnertube(videoId, cookies);
     if (result2.success) {
       return respond(result2.data);
+    }
+
+    // Strategy 3: Try without cookies (in case cookies are stale)
+    if (cookies) {
+      var result3 = tryWatchPage(videoId, "");
+      if (result3.success) {
+        return respond(result3.data);
+      }
     }
 
     var errorMsg = "No captions found for this video.";
     if (result.error)  errorMsg += " Watch page: " + result.error + ".";
     if (result2.error) errorMsg += " Innertube: " + result2.error + ".";
+    if (!cookies) errorMsg += " TIP: Add YT_COOKIES to Script Properties for reliable access.";
 
     return respond({ error: errorMsg });
 
@@ -75,15 +109,22 @@ function doPost(e) {
 
 /* ── Strategy 1: Watch page HTML scraping ── */
 
-function tryWatchPage(videoId) {
+function tryWatchPage(videoId, cookies) {
   try {
     var url = "https://www.youtube.com/watch?v=" + videoId + "&hl=en";
+
+    // Build cookie header: user cookies + consent cookies
+    var cookieStr = "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1LjA3X3AxGgJlbiACGgYIgJnOlwY; CONSENT=PENDING+987";
+    if (cookies) {
+      cookieStr = cookies + "; " + cookieStr;
+    }
+
     var resp = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
-        "Cookie": "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1LjA3X3AxGgJlbiACGgYIgJnOlwY; CONSENT=PENDING+987"
+        "Cookie": cookieStr
       },
       followRedirects: true
     });
@@ -149,7 +190,7 @@ function tryWatchPage(videoId) {
 
 /* ── Strategy 2: Innertube API (WEB client on youtube.com) ── */
 
-function tryInnertube(videoId) {
+function tryInnertube(videoId, cookies) {
   try {
     var endpoint = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false";
     var payload = {
@@ -164,6 +205,11 @@ function tryInnertube(videoId) {
       videoId: videoId
     };
 
+    var cookieStr = "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1LjA3X3AxGgJlbiACGgYIgJnOlwY; CONSENT=PENDING+987";
+    if (cookies) {
+      cookieStr = cookies + "; " + cookieStr;
+    }
+
     var resp = UrlFetchApp.fetch(endpoint, {
       method: "post",
       contentType: "application/json",
@@ -171,7 +217,7 @@ function tryInnertube(videoId) {
       muteHttpExceptions: true,
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Cookie": "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODE1LjA3X3AxGgJlbiACGgYIgJnOlwY; CONSENT=PENDING+987"
+        "Cookie": cookieStr
       }
     });
 
@@ -352,10 +398,11 @@ function doGet(e) {
   var videoId = (e && e.parameter && e.parameter.v) ? e.parameter.v : null;
 
   if (videoId) {
+    var cookies = getYTCookies();
     // Quick test: visit ...exec?v=dQw4w9WgXcQ in browser
-    var result = tryWatchPage(videoId);
+    var result = tryWatchPage(videoId, cookies);
     if (!result.success) {
-      result = tryInnertube(videoId);
+      result = tryInnertube(videoId, cookies);
     }
     if (result.success) {
       return respond({
@@ -364,10 +411,11 @@ function doGet(e) {
         client: result.data.client,
         trackCount: result.data.trackCount,
         language: result.data.track.languageCode,
-        contentLength: result.data.content.length
+        contentLength: result.data.content.length,
+        hasCookies: !!cookies
       });
     }
-    return respond({ status: "error", videoId: videoId, error: result.error });
+    return respond({ status: "error", videoId: videoId, error: result.error, hasCookies: !!cookies });
   }
 
   return respond({
